@@ -4,7 +4,7 @@ import { NovelStatus } from "@libs/novelStatus";
 import * as cheerio from "cheerio";
 
 class NovaPlugin implements Plugin.PluginBase {
-    id = 'es.nova';
+    id = 'nova';
     name = 'NOVA';
     icon = 'src/en/kdtnovels/icon.png';
     site = 'https://novelasligeras.net';
