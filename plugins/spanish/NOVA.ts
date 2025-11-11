@@ -8,7 +8,7 @@ class NovaPlugin implements Plugin.PluginBase {
     name = 'NOVA';
     icon = 'src/en/kdtnovels/icon.png';
     site = 'https://novelasligeras.net';
-    version = '1.0.0';
+    version = '1.1.0';
     
     // Regex para parsear títulos de capítulos
     private readonly CHAPTER_REGEX = /(Parte \d+)[\s\-:.\–]+(.+?):\s*(.+)/;
