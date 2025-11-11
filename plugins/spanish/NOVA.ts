@@ -11,27 +11,61 @@ class NovaPlugin implements Plugin.PluginBase {
     version = '1.1.0';
     
     // Regex para parsear títulos de capítulos
-    private readonly CHAPTER_REGEX = /(Parte \d+)[\s\-:.\–]+(.+?):\s*(.+)/;
+    private readonly CHAPTER_REGEX = /(Parte \d+) . (.+?): (.+)/;
+    
+    // Helper para bypass de imágenes de Cloudflare
+    private async bypassCloudflareImages(
+        $: cheerio.CheerioAPI,
+        $content: cheerio.Cheerio<cheerio.Element>
+    ): Promise<string> {
+        $content.find('img').each((i, img) => {
+            const $img = $(img);
+            let src = $img.attr('src') || $img.attr('data-src') || $img.attr('data-cfsrc');
+            
+            if (src) {
+                // Si la imagen tiene atributos de Cloudflare, usar la URL directa
+                $img.attr('src', src);
+                $img.removeAttr('data-src');
+                $img.removeAttr('data-cfsrc');
+            }
+        });
+        
+        return $content.html() || '';
+    }
+    
+    // Helper para convertir HTML a texto limpio (si es necesario)
+    private htmlToText(html: string | null | undefined): string {
+        if (!html) return '';
+        const $ = cheerio.load(html);
+        $('script, style').remove();
+        return $.text().trim();
+    }
     
     // Método para obtener novelas populares
     async popularNovels(
         pageNo: number,
         options: Plugin.PopularNovelsOptions
     ): Promise<Plugin.NovelItem[]> {
+        // Para la primera página, usar la búsqueda AJAX
+        if (pageNo === 1) {
+            return this.searchNovels('', 1);
+        }
+        
+        // Para páginas siguientes, usar la paginación normal
         const url = `${this.site}/index.php/page/${pageNo}/?post_type=product&orderby=popularity`;
         const body = await fetchApi(url).then(res => res.text());
         const $ = cheerio.load(body);
         
         const novels: Plugin.NovelItem[] = [];
         
-        $('div.wf-cell').each((i, element) => {
+        $('.dt-css-grid div.wf-cell').each((i, element) => {
             const $el = $(element);
             const $img = $el.find('img');
             const $link = $el.find('h4.entry-title a');
             
             const path = $link.attr('href')?.replace(this.site, '') || '';
             const name = $link.text().trim();
-            const cover = $img.attr('data-src') || $img.attr('src') || '';
+            const cover = $img.attr('data-src') || $img.attr('data-cfsrc') || $img.attr('src') || '';
             
             if (name && path) {
                 novels.push({ name, path, cover });
@@ -46,26 +80,57 @@ class NovaPlugin implements Plugin.PluginBase {
         searchTerm: string,
         pageNo: number
     ): Promise<Plugin.NovelItem[]> {
-        const encodedTerm = encodeURIComponent(searchTerm);
-        const url = `${this.site}/index.php/page/${pageNo}/?s=${encodedTerm}&post_type=product&orderby=relevance`;
-        const body = await fetchApi(url).then(res => res.text());
-        const $ = cheerio.load(body);
-        
         const novels: Plugin.NovelItem[] = [];
         
-        $('div.wf-cell').each((i, element) => {
-            const $el = $(element);
-            const $img = $el.find('img');
-            const $link = $el.find('h4.entry-title a');
+        if (pageNo > 1) {
+            // Búsqueda paginada normal
+            const encodedTerm = encodeURIComponent(searchTerm);
+            const url = `${this.site}/index.php/page/${pageNo}/?s=${encodedTerm}&post_type=product&title=1&excerpt=1&content=0&categories=1&attributes=1&tags=1&sku=0&orderby=popularity&ixwps=1`;
             
-            const path = $link.attr('href')?.replace(this.site, '') || '';
-            const name = $link.text().trim();
-            const cover = $img.attr('data-src') || $img.attr('src') || '';
+            const body = await fetchApi(url).then(res => res.text());
+            const $ = cheerio.load(body);
             
-            if (name && path) {
-                novels.push({ name, path, cover });
+            $('.dt-css-grid div.wf-cell').each((i, element) => {
+                const $el = $(element);
+                const $img = $el.find('img');
+                const $link = $el.find('h4.entry-title a');
+                
+                const path = $link.attr('href')?.replace(this.site, '') || '';
+                const name = $link.text().trim();
+                const cover = $img.attr('data-src') || $img.attr('data-cfsrc') || $img.attr('src') || '';
+                
+                if (name && path) {
+                    novels.push({ name, path, cover });
+                }
+            });
+        } else {
+            // Primera página: usar búsqueda AJAX
+            const url = `${this.site}/wp-admin/admin-ajax.php?tags=1&sku=&limit=30&category_results=&order=DESC&category_limit=5&order_by=title&product_thumbnails=1&title=1&excerpt=1&content=&categories=1&attributes=1`;
+            
+            const formData = new FormData();
+            formData.append('action', 'product_search');
+            formData.append('product-search', '1');
+            formData.append('product-query', searchTerm);
+            
+            const response = await fetchApi(url, {
+                method: 'POST',
+                body: formData
+            });
+            
+            const data = await response.json();
+            
+            if (Array.isArray(data)) {
+                data.forEach(novel => {
+                    const path = novel.url?.replace(this.site, '') || '';
+                    const name = novel.title || '';
+                    const cover = novel.thumbnail || '';
+                    
+                    if (name && path) {
+                        novels.push({ name, path, cover });
+                    }
+                });
             }
-        });
+        }
         
         return novels;
     }
@@ -78,31 +143,18 @@ class NovaPlugin implements Plugin.PluginBase {
         
         // Extraer información básica
         const name = $('h1').first().text().trim();
-        const $coverImg = $('.woocommerce-product-gallery img').first();
-        const cover = $coverImg.attr('data-src') || $coverImg.attr('src') || '';
+        const $coverImg = $('.woocommerce-product-gallery').find('img').first();
+        const cover = $coverImg.attr('src') || $coverImg.attr('data-cfsrc') || $coverImg.attr('data-src') || '';
         
-        // Extraer autor, artista y género
+        // Extraer autor, artista
         const author = $('.woocommerce-product-attributes-item--attribute_pa_escritor td')
             .text().trim() || 'Desconocido';
         const artist = $('.woocommerce-product-attributes-item--attribute_pa_ilustrador td')
             .text().trim() || '';
         
-        // Extraer etiquetas y géneros
-        const labels = $('.woocommerce-product-gallery .berocket_better_labels b')
-            .map((i, el) => $(el).text().trim())
-            .get()
-            .filter((v, i, a) => a.indexOf(v) === i)
-            .slice(0, 2);
-        
-        const genres = $('.product_meta .posted_in a')
-            .map((i, el) => $(el).text().trim())
-            .get()
-            .join(', ');
-        
-        // Construir resumen
-        const shortDescription = $('.woocommerce-product-details__short-description').text().trim();
-        const labelsText = labels.length > 0 ? labels.map(l => `[${l}]`).join(' ') + '\n\n' : '';
-        const summary = (labelsText + shortDescription).trim();
+        // Extraer resumen
+        const summaryHtml = $('.woocommerce-product-details__short-description').html();
+        const summary = this.htmlToText(summaryHtml);
         
         // Determinar estado
         const statusText = $('.woocommerce-product-attributes-item--attribute_pa_estado td')
@@ -116,48 +168,43 @@ class NovaPlugin implements Plugin.PluginBase {
         
         // Extraer capítulos
         const chapters: Plugin.ChapterItem[] = [];
+        let chapterIndex = 0;
         
-        $('.vc_row div.vc_column-inner > div.wpb_wrapper .wpb_tab a').each((index, element) => {
+        $('.vc_row div.vc_column-inner > div.wpb_wrapper').each((i, element) => {
             const $el = $(element);
-            const chapterPath = $el.attr('href')?.replace(this.site, '') || '';
-            const chapterText = $el.text().trim();
+            const volume = $el.find('.dt-fancy-title').first().text().trim();
             
-            // Buscar el volumen más cercano
-            let volume = '';
-            const $volumeTitle = $el.parents().find('.dt-fancy-title').filter((i, el) => {
-                return $(el).text().startsWith('Volumen');
-            }).first();
-            
-            if ($volumeTitle.length > 0) {
-                volume = $volumeTitle.text().trim();
+            if (!volume.startsWith('Volumen')) {
+                return;
             }
             
-            // Parsear el nombre del capítulo
-            let chapterName = chapterText;
-            const match = this.CHAPTER_REGEX.exec(chapterText);
-            
-            if (match) {
-                const [, part, number, title] = match;
-                chapterName = volume 
-                    ? `${volume} - ${number} - ${part}: ${title}`
-                    : `${number} - ${part}: ${title}`;
-            } else if (volume) {
-                chapterName = `${volume} - ${chapterText}`;
-            }
-            
-            if (chapterPath) {
+            $el.find('.wpb_tab a').each((j, chapterEl) => {
+                const $chapter = $(chapterEl);
+                const chapterPartName = $chapter.text().trim();
+                const chapterPath = $chapter.attr('href')?.replace(this.site, '') || '';
+                
+                if (!chapterPath) return;
+                
+                const match = this.CHAPTER_REGEX.exec(chapterPartName);
+                let chapterName: string;
+                
+                if (match) {
+                    const [, part, chapter, name] = match;
+                    chapterName = `${volume} - ${chapter} - ${part}: ${name}`;
+                } else {
+                    chapterName = `${volume} - ${chapterPartName}`;
+                }
+                
                 chapters.push({
                     name: chapterName,
                     path: chapterPath,
                     releaseTime: '',
-                    chapterNumber: index + 1
+                    chapterNumber: chapterIndex + 1
                 });
-            }
+                
+                chapterIndex++;
+            });
         });
-        
-        // LNReader muestra los capítulos en orden inverso por defecto
-        // así que los invertimos aquí para mantener el orden correcto
-        chapters.reverse();
         
         const novel: Plugin.SourceNovel = {
             path: novelPath,
@@ -166,7 +213,6 @@ class NovaPlugin implements Plugin.PluginBase {
             summary,
             author,
             artist,
-            genres,
             status,
             chapters
         };
@@ -181,19 +227,28 @@ class NovaPlugin implements Plugin.PluginBase {
         const $ = cheerio.load(body);
         
         // Determinar el selector correcto basado en el contenido
-        let contentSelector = '.wpb_text_column.wpb_content_element > .wpb_wrapper';
+        let $chapterText: cheerio.Cheerio<cheerio.Element>;
         
         if (body.includes('Nadie entra sin permiso en la Gran Tumba de Nazarick')) {
-            contentSelector = '#content';
+            $chapterText = $('#content');
+        } else {
+            $chapterText = $('.wpb_text_column.wpb_content_element > .wpb_wrapper');
         }
         
-        const $content = $(contentSelector).first();
+        // Remover anuncios y elementos no deseados
+        $chapterText.find('center').remove();
         
-        // Remover elementos no deseados
-        $content.find('h1, center, img.aligncenter.size-large').remove();
+        // Convertir elementos con text-align center a tags <center>
+        $chapterText.find('*').each((i, el) => {
+            const $el = $(el);
+            const style = $el.attr('style') || '';
+            if (/text-align:.?center/.test(style)) {
+                $el.replaceWith(`<center>${$el.html()}</center>`);
+            }
+        });
         
-        // Si no se encontró contenido, usar el body completo
-        let chapterContent = $content.html()?.trim() || $('body').html()?.trim() || '';
+        // Aplicar bypass de imágenes de Cloudflare
+        let chapterContent = await this.bypassCloudflareImages($, $chapterText);
         
         // Limpiar scripts, estilos y otros elementos innecesarios
         const $clean = cheerio.load(chapterContent);
