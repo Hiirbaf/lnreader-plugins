@@ -6,7 +6,7 @@ import * as cheerio from "cheerio";
 class NovaPlugin implements Plugin.PluginBase {
     id = 'nova';
     name = 'NOVA';
-    icon = 'src/en/kdtnovels/icon.png';
+    icon = 'src/es/nova/icon.png';
     site = 'https://novelasligeras.net';
     version = '1.1.0';
     
