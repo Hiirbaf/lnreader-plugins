@@ -107,14 +107,18 @@ class NovaPlugin implements Plugin.PluginBase {
             // Primera página: usar búsqueda AJAX
             const url = `${this.site}/wp-admin/admin-ajax.php?tags=1&sku=&limit=30&category_results=&order=DESC&category_limit=5&order_by=title&product_thumbnails=1&title=1&excerpt=1&content=&categories=1&attributes=1`;
             
-            const formData = new FormData();
-            formData.append('action', 'product_search');
-            formData.append('product-search', '1');
-            formData.append('product-query', searchTerm);
-            
+            const body = new URLSearchParams({
+                action: 'product_search',
+                'product-search': '1',
+                'product-query': searchTerm,
+            }).toString();
+
             const response = await fetchApi(url, {
                 method: 'POST',
-                body: formData
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body,
             });
             
             const data = await response.json();
